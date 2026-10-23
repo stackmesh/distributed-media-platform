@@ -1,0 +1,63 @@
+syntax = "proto3";
+
+package stackmesh.media.v1;
+
+option go_package = "github.com/stackmesh/go-media-gateway/proto/media/v1;mediav1";
+
+// MediaGateway is the edge contract for binary intake.
+// cmd/main.go serves the HTTP mapping documented on each RPC.
+// Generate stubs from this file when another client language needs the same frames.
+service MediaGateway {
+  // HTTP: POST /v1/objects
+  // Headers: X-Tenant-Id, Content-Type, optional X-Content-Sha256.
+  // Body: raw object bytes.
+  rpc PutObject(stream PutChunk) returns (Object);
+
+  // HTTP: GET /v1/route?hash&bytes&mime&region
+  rpc RouteObject(RouteRequest) returns (Placement);
+
+  // HTTP: GET /v1/objects/{id}
+  rpc GetObject(GetObjectRequest) returns (Object);
+}
+
+message PutChunk {
+  oneof part {
+    ObjectHeader header = 1;
+    bytes data = 2;
+  }
+}
+
+message ObjectHeader {
+  string tenant_id = 1;
+  string mime = 2;
+  string content_sha256 = 3;
+}
+
+message RouteRequest {
+  string content_sha256 = 1;
+  int64 size_bytes = 2;
+  string mime = 3;
+  string region = 4;
+}
+
+message Placement {
+  string primary = 1;
+  repeated string replicas = 2;
+  string region = 3;
+}
+
+message GetObjectRequest {
+  string id = 1;
+}
+
+message Object {
+  string id = 1;
+  string tenant_id = 2;
+  string content_sha256 = 3;
+  int64 size_bytes = 4;
+  string mime = 5;
+  string region = 6;
+  string primary = 7;
+  repeated string replicas = 8;
+  bool created = 9;
+}

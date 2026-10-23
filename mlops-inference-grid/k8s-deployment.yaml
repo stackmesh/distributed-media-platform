@@ -1,0 +1,290 @@
+# GPU slice limits for the media inference grid.
+# Triton takes one small MIG slice per replica. vLLM takes one larger slice.
+# Requests equal limits so these pods stay Guaranteed and are not evicted.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: stackmesh-inference
+  labels:
+    pod-security.kubernetes.io/enforce: baseline
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: inference
+  namespace: stackmesh-inference
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: inference-quota
+  namespace: stackmesh-inference
+spec:
+  hard:
+    pods: "20"
+    requests.cpu: "16"
+    requests.memory: 64Gi
+    limits.cpu: "32"
+    limits.memory: 96Gi
+    "requests.nvidia.com/mig-1g.5gb": "4"
+    "requests.nvidia.com/mig-2g.20gb": "2"
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: inference-limits
+  namespace: stackmesh-inference
+spec:
+  limits:
+    - type: Container
+      default:
+        cpu: 500m
+        memory: 512Mi
+      defaultRequest:
+        cpu: 100m
+        memory: 256Mi
+      max:
+        cpu: "8"
+        memory: 32Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: triton-media-tagger
+  namespace: stackmesh-inference
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: triton-media-tagger
+  template:
+    metadata:
+      labels:
+        app: triton-media-tagger
+    spec:
+      serviceAccountName: inference
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: triton-media-tagger
+      containers:
+        - name: triton
+          image: stackmesh/media-tagger:0.1.0
+          imagePullPolicy: IfNotPresent
+          args: ["tritonserver", "--model-repository=/models"]
+          ports:
+            - name: http
+              containerPort: 8000
+            - name: grpc
+              containerPort: 8001
+            - name: metrics
+              containerPort: 8002
+          env:
+            - name: HOME
+              value: /tmp
+          readinessProbe:
+            httpGet:
+              path: /v2/health/ready
+              port: http
+            periodSeconds: 10
+            failureThreshold: 6
+          resources:
+            requests:
+              cpu: "2"
+              memory: 8Gi
+              "nvidia.com/mig-1g.5gb": "1"
+            limits:
+              cpu: "2"
+              memory: 8Gi
+              "nvidia.com/mig-1g.5gb": "1"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: shm
+              mountPath: /dev/shm
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 1Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: triton-media-tagger
+  namespace: stackmesh-inference
+spec:
+  selector:
+    app: triton-media-tagger
+  ports:
+    - name: http
+      port: 8000
+      targetPort: http
+    - name: grpc
+      port: 8001
+      targetPort: grpc
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: triton-media-tagger
+  namespace: stackmesh-inference
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app: triton-media-tagger
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: triton-media-tagger
+  namespace: stackmesh-inference
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: triton-media-tagger
+  minReplicas: 2
+  maxReplicas: 4
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 60
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vllm-caption
+  namespace: stackmesh-inference
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: vllm-caption
+  template:
+    metadata:
+      labels:
+        app: vllm-caption
+    spec:
+      serviceAccountName: inference
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 60
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: vllm
+          image: vllm/vllm-openai:v0.6.3
+          imagePullPolicy: IfNotPresent
+          args:
+            - --model
+            - stackmesh/media-caption-7b
+            - --quantization
+            - awq
+            - --dtype
+            - float16
+            - --max-model-len
+            - "4096"
+            - --gpu-memory-utilization
+            - "0.90"
+            - --tensor-parallel-size
+            - "1"
+            - --enable-chunked-prefill
+            - --max-num-seqs
+            - "16"
+          ports:
+            - name: http
+              containerPort: 8000
+          env:
+            - name: HOME
+              value: /tmp
+            - name: HF_HOME
+              value: /var/cache/huggingface
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 15
+            failureThreshold: 12
+          resources:
+            requests:
+              cpu: "4"
+              memory: 24Gi
+              "nvidia.com/mig-2g.20gb": "1"
+            limits:
+              cpu: "4"
+              memory: 24Gi
+              "nvidia.com/mig-2g.20gb": "1"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: cache
+              mountPath: /var/cache/huggingface
+            - name: shm
+              mountPath: /dev/shm
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: cache
+          emptyDir: {}
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 2Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vllm-caption
+  namespace: stackmesh-inference
+spec:
+  selector:
+    app: vllm-caption
+  ports:
+    - name: http
+      port: 8000
+      targetPort: http
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: vllm-caption
+  namespace: stackmesh-inference
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app: vllm-caption

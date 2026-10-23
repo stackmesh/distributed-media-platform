@@ -1,0 +1,11 @@
+databaseChangeLog:
+  - changeSet:
+      id: 001-subledger
+      author: stackmesh
+      logicalFilePath: db/changelog/changes/001-subledger.yaml
+      changes:
+        - sqlFile:
+            path: 001-subledger.sql
+            relativeToChangelogFile: true
+            splitStatements: true
+            stripComments: true

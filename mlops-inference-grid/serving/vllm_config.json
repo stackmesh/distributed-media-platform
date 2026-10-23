@@ -1,0 +1,26 @@
+{
+  "service": "stackmesh-caption",
+  "model": "stackmesh/media-caption-7b",
+  "active_profile": "int4-awq",
+  "dtype": "float16",
+  "max_model_len": 4096,
+  "gpu_memory_utilization": 0.9,
+  "tensor_parallel_size": 1,
+  "enable_chunked_prefill": true,
+  "max_num_seqs": 16,
+  "profiles": {
+    "int4-awq": {
+      "quantization": "awq",
+      "weight_bits": 4,
+      "group_size": 128,
+      "zero_point": true
+    },
+    "int4-gptq": {
+      "quantization": "gptq",
+      "weight_bits": 4,
+      "group_size": 128,
+      "desc_act": false,
+      "sym": true
+    }
+  }
+}
